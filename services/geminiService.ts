@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { PromptData, UserResponse, EvaluationResult } from "../types";
+import { QUESTION_BANK } from "./questionBank";
 
 // Initialize the client safely
 const apiKey = process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY || "";
@@ -8,43 +9,45 @@ if (!apiKey) {
 }
 const ai = new GoogleGenAI({ apiKey });
 
-const MODEL_NAME = "gemini-3-flash-preview";
+const MODEL_NAME = "gemini-2.0-flash";
+
+const ASKED_KEY = "pg_asked_question_indices";
+
+const loadAskedIndices = (): Set<number> => {
+  try {
+    const stored = localStorage.getItem(ASKED_KEY);
+    return stored ? new Set<number>(JSON.parse(stored)) : new Set<number>();
+  } catch {
+    return new Set<number>();
+  }
+};
+
+const saveAskedIndices = (indices: Set<number>) => {
+  localStorage.setItem(ASKED_KEY, JSON.stringify([...indices]));
+};
 
 /**
- * Generates a random Product Sense interview question.
+ * Picks a random question from the bank, avoiding repeats across sessions.
+ * Resets only after all questions have been seen.
  */
 export const generatePrompt = async (): Promise<PromptData> => {
-  try {
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: "Generate a single, unique Product Management interview question focused on Root Cause Analysis (RCA), product strategy, or real-life PM decisions and trade-offs. Make the question slightly simpler, suitable for an entry-level or mid-level PM (avoid overly complex or niche scenarios). Do NOT ask basic 'Design X' questions. Provide a short context sentence setting the stage. Also provide a 'proTip' that gives a specific hint on how to approach or structure the answer for this exact question.",
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            question: { type: Type.STRING, description: "The main interview question" },
-            context: { type: Type.STRING, description: "A brief sentence setting the stage" },
-            proTip: { type: Type.STRING, description: "A helpful hint or suggested structure specific to this question" },
-          },
-          required: ["question", "context", "proTip"],
-        },
-        temperature: 0.9,
-      },
-    });
+  const asked = loadAskedIndices();
 
-    if (response.text) {
-      return JSON.parse(response.text) as PromptData;
-    }
-    throw new Error("Empty response from AI");
-  } catch (error) {
-    console.error("Error generating prompt:", error);
-    return {
-      question: "Daily active users (DAU) on our core messaging app dropped by 10% yesterday. How would you investigate the root cause?",
-      context: "You are the lead PM for the core engagement team.",
-      proTip: "Start by clarifying if the drop is internal (data glitch) or external, then segment the data by platform, region, or user type.",
-    };
+  if (asked.size >= QUESTION_BANK.length) {
+    asked.clear();
   }
+
+  const remaining = QUESTION_BANK
+    .map((_, i) => i)
+    .filter((i) => !asked.has(i));
+
+  const idx = remaining[Math.floor(Math.random() * remaining.length)];
+
+  asked.add(idx);
+  saveAskedIndices(asked);
+
+  const { question, context, proTip } = QUESTION_BANK[idx];
+  return { question, context, proTip };
 };
 
 /**
@@ -57,7 +60,7 @@ export const evaluateSubmission = async (
   const promptText = `
     You are a World-Class VP of Product at a top tech company (Google, Meta, etc.).
     Evaluate the following PM candidate's response to the interview question: "${question}".
-    
+
     Candidate Response:
     ${response.answer}
 
@@ -69,7 +72,7 @@ export const evaluateSubmission = async (
        - Analytical Thinking
        - Customer Empathy
     2. Provide brief (1-2 sentences) qualitative feedback on the overall response.
-    3. Generate three distinct sample answers for the same question from the perspective of an 'AI Junior PM', 'AI Senior PM', and 'AI World-Class PM'. 
+    3. Generate three distinct sample answers for the same question from the perspective of an 'AI Junior PM', 'AI Senior PM', and 'AI World-Class PM'.
        - These answers should be crisp, to-the-point, and prioritize creative, insightful ideas over sophisticated language.
     4. Score YOUR own generated sample answers using the same five metrics.
     5. Generate a short Wordle-style share message.
@@ -113,7 +116,7 @@ export const evaluateSubmission = async (
                 required: ["level", "content", "scores"]
               },
             },
-            shareMessage: { type: Type.STRING, description: "A short string with emojis summarizing the score, e.g. 'PM Practice 🟩🟩🟨 85/100'" },
+            shareMessage: { type: Type.STRING, description: "A short string with emojis summarizing the score, e.g. 'PM Practice 85/100'" },
           },
           required: ["scores", "feedback", "sampleAnswers", "shareMessage"],
         },
@@ -131,7 +134,7 @@ export const evaluateSubmission = async (
       scores: { overall: 0, strategicThinking: 0, creativity: 0, clarity: 0, analyticalThinking: 0, customerEmpathy: 0 },
       feedback: "Error generating evaluation. Please try again.",
       sampleAnswers: [],
-      shareMessage: "Error 🔴",
+      shareMessage: "Error",
     };
   }
 };
